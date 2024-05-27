@@ -1,8 +1,10 @@
 package main
 
 import (
+	"html/template"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,9 +13,9 @@ import (
 	"time"
 )
 
-var itemsCount = 0
+var tmpl = template.Must(template.ParseFiles("index.html"))
 
-func processFile(wg *sync.WaitGroup, filePath string, newBasePath string, _ time.Time) {
+func processFile(wg *sync.WaitGroup, filePath string, newBasePath string, counter *int) {
 	defer wg.Done()
 	fileName := filepath.Base(filePath)
 	newFileName := sanitizeFileName(fileName)
@@ -21,10 +23,10 @@ func processFile(wg *sync.WaitGroup, filePath string, newBasePath string, _ time
 
 	err := os.Rename(filePath, newFilePath)
 	if err != nil {
-		log.Printf("Erro ao renomear arquivo %s para %s: %v\n", filePath, newFilePath, err)
+		log.Printf("Erro ao renomear o arquivo %s para %s: %v\n", filePath, newFilePath, err)
 		return
 	}
-	itemsCount++
+	*counter++
 }
 
 func sanitizeFileName(fileName string) string {
@@ -35,36 +37,59 @@ func sanitizeFileName(fileName string) string {
 	return strings.ToUpper(cleanName) + ext
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Usage: %s <inputDir>", os.Args[0])
+func formatTime(t time.Time) string {
+	return t.Format("02/01/2006 15:04:05")
+}
+
+func handleProcess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		tmpl.Execute(w, nil)
+		return
 	}
 
-	dirPath := os.Args[1]
-
+	dirPath := r.FormValue("directory")
 	startTime := time.Now()
-	log.Printf("Iniciado processo em: %v\n", startTime)
+	log.Printf("Iniciado o processamento em %v\n", formatTime(startTime))
 
 	files, err := ioutil.ReadDir(dirPath)
 	if err != nil {
-		log.Printf("Erro ao ler diretório: %v\n", err)
+		log.Printf("Erro ao ler o diretório: %v\n", err)
+		http.Error(w, "Erro ao ler o diretório", http.StatusInternalServerError)
 		return
 	}
 
 	var wg sync.WaitGroup
+	counter := 0
 
 	for _, file := range files {
 		if !file.IsDir() {
 			wg.Add(1)
-			go processFile(&wg, filepath.Join(dirPath, file.Name()), dirPath, startTime)
+			go processFile(&wg, filepath.Join(dirPath, file.Name()), dirPath, &counter)
 		}
 	}
 
 	wg.Wait()
 
 	endTime := time.Now()
-	duration := endTime.Sub(startTime)
-	log.Printf("Finalizado processo em: %v\n", endTime)
-	log.Printf("Tempo duração: %v\n", duration)
-	log.Printf("Arquivos processados: %v\n", itemsCount)
+	duration := endTime.Sub(startTime).Seconds()
+	log.Printf("Finalizado o processamento em %v\n", formatTime(endTime))
+	log.Printf("Duração do processamento: %.2f segundos\n", duration)
+
+	tmpl.Execute(w, struct {
+		Started   string
+		Finished  string
+		Duration  float64
+		FileCount int
+	}{
+		Started:   formatTime(startTime),
+		Finished:  formatTime(endTime),
+		Duration:  duration,
+		FileCount: counter,
+	})
+}
+
+func main() {
+	http.HandleFunc("/", handleProcess)
+	log.Println("Acesse: http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
